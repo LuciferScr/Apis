@@ -1,116 +1,131 @@
+import os
+import string
+import csv
+import random
+import time
+from datetime import datetime, timedelta
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, CallbackContext
+from bino import get_bin_info
 
-from fastapi import FastAPI, HTTPException, Query, Path
-from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Dict, Optional
-import pandas as pd
+bot_token = "7928602739:AAFL6NBfxwDq8L3pg576bgjabdSfcfqEn2g"
+archivo_csv = 'bins.csv'
+chat_send = [-1001983783501]
 
-app = FastAPI(
-    title="API de BINs",
-    description="API para consultar información de BINs bancarios",
-    version="1.0.0"
-)
+def calcular_verificador_luhn(numero):
+    digitos = [int(digito) for digito in numero]
+    digitos.reverse()
 
-# Configuración de CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    suma = 0
+    for i in range(len(digitos)):
+        if i % 2 == 0:
+            digito_doble = digitos[i] * 2
+            suma += digito_doble - 9 if digito_doble > 9 else digito_doble
+        else:
+            suma += digitos[i]
 
-# Cache para el DataFrame
-df: Optional[pd.DataFrame] = None
+    return (10 - (suma % 10)) % 10
 
-def load_data() -> pd.DataFrame:
-    """Carga los datos del archivo CSV"""
-    global df
-    if df is None:
-        try:
-            df = pd.read_csv("bins.csv")
-            df['number'] = df['number'].astype(str)
-        except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Error al cargar la base de datos: {str(e)}"
-            )
-    return df
+def generar_tarjeta(bin_cc):
+    tarjetas_generadas = []
+    bin_generado = str(bin_cc).rjust(6, '0')
 
-@app.on_event("startup")
-async def startup_event():
-    """Carga los datos al iniciar la aplicación"""
-    load_data()
+    resto_tarjeta = ''.join(random.choice('0123456789') for _ in range(9))
 
-@app.get("/", tags=["General"])
-def read_root() -> Dict[str, str]:
-    """Endpoint raíz que muestra información básica de la API"""
-    return {
-        "message": "API is running",
-        "description": "API para consulta de BINs bancarios",
-        "endpoints": "/ (root), /bin/{number} (consulta BIN), /bins/search (búsqueda), /stats (estadísticas)"
-    }
+    numero_tarjeta = bin_generado + resto_tarjeta
 
-@app.get("/bin/{number}", tags=["BINs"])
-def get_bin(number: str = Path(..., min_length=6, max_length=8)) -> List[Dict]:
-    """
-    Obtiene la información de un BIN específico
-    
-    Args:
-        number: Número de BIN (6-8 dígitos)
-        
-    Returns:
-        Lista de coincidencias encontradas
-    """
-    data = load_data()
-    result = data[data["number"].astype(str).str.strip('"') == number].iloc[0:1]
-    
-    if result.empty:
-        raise HTTPException(
-            status_code=404,
-            detail="BIN no encontrado"
-        )
-    
-    return result.to_dict(orient="records")
+    digito_verificacion = calcular_verificador_luhn(numero_tarjeta)
 
-@app.get("/bins/search", tags=["BINs"])
-def search_bins(
-    country: Optional[str] = None,
-    bank: Optional[str] = None,
-    limit: int = Query(10, ge=1, le=100)
-) -> List[Dict]:
-    """
-    Búsqueda de BINs por país o banco
-    
-    Args:
-        country: País a buscar
-        bank: Banco a buscar
-        limit: Límite de resultados (1-100)
-        
-    Returns:
-        Lista de BINs que coinciden con los criterios
-    """
-    data = load_data()
-    
-    if country:
-        data = data[data["country"].str.contains(country, case=False, na=False)]
-    if bank:
-        data = data[data["bank"].str.contains(bank, case=False, na=False)]
-        
-    if data.empty:
-        raise HTTPException(
-            status_code=404,
-            detail="No se encontraron resultados"
-        )
-        
-    return data.head(limit).to_dict(orient="records")
+    tarjeta_formateada = f"{numero_tarjeta}{digito_verificacion}"
 
-@app.get("/stats", tags=["Estadísticas"])
-def get_stats() -> Dict:
-    """Obtiene estadísticas generales de la base de datos"""
-    data = load_data()
-    return {
-        "total_bins": len(data),
-        "countries": data["country"].nunique(),
-        "banks": data["bank"].nunique(),
-        "vendors": data["vendor"].nunique()
-    }
+    fecha_expiracion = (datetime.now() + timedelta(days=random.randint(365, (2030 - datetime.now().year) * 365))).strftime("%m|%Y")
+
+    primer_digito = str(bin_cc)[0]
+    if primer_digito == '3':
+        cvv = random.randint(1000, 9999)
+    else:
+        cvv = random.randint(100, 999)
+
+    tarjeta_formateada += f"|{fecha_expiracion}|{cvv}"
+
+    tarjetas_generadas.append(tarjeta_formateada)
+
+    return tarjetas_generadas
+
+def obtener_numero_aleatorio():
+    with open(archivo_csv, newline='', encoding='utf-8') as archivo:
+        lector_csv = csv.reader(archivo)
+        encabezados = next(lector_csv)
+
+        lineas_filtradas = [linea for linea in lector_csv if linea[0].startswith(('5', '6', '4'))]
+
+        if lineas_filtradas:
+            info_aleatoria = random.choice(lineas_filtradas)
+
+            numero_aleatorio = dict(zip(encabezados, info_aleatoria)).get('number')
+            return numero_aleatorio
+        else:
+            return None
+
+def enviar_conectado(context: CallbackContext):
+    while True:
+        for chat_id in chat_send:
+            bin_cc = obtener_numero_aleatorio()
+            x = get_bin_info(bin_cc)
+            bank = x.get("bank_name")
+
+            if bank is None or not bank.strip():
+                pass
+            else:
+                tarjetas_generadas = generar_tarjeta(bin_cc)
+                for i, tarjeta in enumerate(tarjetas_generadas, start=1):
+                    mes = random.randint(25, 35)
+
+                    primeros_8 = tarjeta[:8]
+                    primeros_12 = tarjeta[:12]
+
+                    mes = f"{random.randint(1, 12):02d}"
+                    ano = random.randint(2025, 2030)
+
+                    cvv = f"{random.randint(100, 999)}"
+
+                    extra1 = f"{primeros_12}xxxx|{mes}|{ano}"
+
+                    digitos_aleatorios = ''.join([str(random.randint(0, 9)) for _ in range(4)])
+                    extra2 = f"{primeros_8}{digitos_aleatorios}xxxx|{mes}|{ano}"
+
+                    text = f"""
+⛈ New Card!
+━ • ━━━━━━━━━━━━ • ━
+•Card: <code>{tarjeta}</code>
+•Response: <code>Card Issuer Declined CVV!</code>
+━ • ━━━━━━━━━━━━ • ━
+•Info = <code>{x.get("type")}</code> <code>{x.get("vendor")}</code> <code>{x.get("level")}</code>
+•Country = <code>{x.get("country")} {x.get("flag")}</code>
+•Bank = <code>{x.get("bank_name")}</code>
+━ • ━━━━━━━━━━━━ • ━
+<code>{extra1}</code>
+<code>{extra2}</code>
+━ • ━━━━━━━━━━━━ • ━"""
+
+                    print(f"Tarjeta {i}: {tarjeta}")
+                    context.bot.send_message(chat_id=chat_id, text=text)
+
+        time.sleep(10)
+
+def start(update: Update, context: CallbackContext):
+    update.message.reply_text('Bot iniciado con éxito!')
+
+def main():
+    updater = Updater(bot_token, use_context=True)
+    dp = updater.dispatcher
+
+    dp.add_handler(CommandHandler("start", start))
+
+    updater.start_polling()
+    updater.idle()
+
+    enviar_conectado(context=dp)
+
+if __name__ == "__main__":
+    main()
